@@ -1,0 +1,474 @@
+<?php namespace Frontend;
+
+use \DB;
+use \Input;
+use \View;
+use \Cache;
+use \Response;
+use \Redirect;
+use \Emailcode;
+use \Member;
+use \Session;
+use \Config;
+use \Validator;
+
+
+/**
+|----------------------------------------------------------------------------------
+| Member 用户操作类  @Testing-Author:heli  开始时间: 2014-08-04
+| 如有疑问 请 Email: mocmot@126.com  -  7X24 hour
+|----------------------------------------------------------------------------------
+|
+|本文件作为对 laravel 框架的练习 属于测试板  test ，简单实现了一些用户基本的逻辑操作
+|
+|实现功能 & function ：
+|用户操作，登录，修改，权限，冻结用户，用户操作页面之间的跳转
+|
+*/
+class MemberController  extends BaseController
+{	
+
+	//用户状态
+	const STATE_TYPE_PUBLIC  = 1;  //普通用户
+	const STATE_TYPE_FREEZE  = 2;  //被禁用
+	const STATE_TYPE_ADMIN   = 3;  //管理员
+	const VALUE_NULL = NULL; //空设值
+	const STATE_TYPE_ALL   = 9;  //显示所有内容
+    
+
+   /**
+	* 页面跳转
+	*
+	* @return Response
+	*/
+	public function getPageshow()
+	{	
+		//通过get 传值地址页面跳转指定页面
+		$filename = input::get('filename','index');
+		return  View::make("Frontend.pages.$filename");
+	}
+
+
+
+   /**
+	* 用户注册
+	*
+	* @return Response
+	*/
+	public function postAddmember()
+	{
+		//接受用户基本信息
+		$email = trim(Input::get('email'));
+		$password = trim(Input::get('password'));
+		$repassword = trim(Input::get('repassword'));
+		$validator = Validator::make(Input::all(), Config::get('rules.member_register'));
+
+
+
+
+		//判断邮箱是否为空
+        if($validator->fails()) {
+
+		return Redirect::back()->withErrors($validator);
+        }  	
+
+		//统计 申请列表中 Input::get  - email 的 数值
+		$remail_count = DB::table('email_code')->where('EM', '=', $email)->count(); 
+
+		//统计 用户Input::get  -  email 数值
+		$member_count= DB::table('members')->where('email','=',$email)->count();
+
+		// //判断密码是否为空
+		// if (empty($password && $repassword)) {
+
+		// 	return Redirect::back()->withMessage('密码或确认密码不能为空');
+		// } 
+
+		// // 用正则判断 Email的正确性
+		// if (!preg_match("/\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*/", $email)) {
+
+		// 	return Redirect::back()->withMessage('请填写正确的邮箱地址');
+		// }
+
+		// //判断重复密码是否一致
+		// if($password !== $repassword) {
+
+		// 	return  Redirect::back()->withMessage('抱歉您的确认密码不一致');   
+		// }
+
+		// 判断用户邮箱是否已注册
+		if($member_count >=1) {	
+		
+			return Redirect::back()->withMessage('此邮箱已注册');
+		}
+
+		//判断是否有注册资格
+		if($remail_count>=1) {
+
+			//如果有资格则执行注册操作
+			$member_db = new Member;
+			$member_db->email = $email;
+			$addtime=time();
+			$member_db->addtime=$addtime;
+			$member_db->password=md5($password);
+			$member_db->save();
+
+			return Redirect::back()->withMessage('注册成功！');
+		} else {  
+		
+			return Redirect::back()->withMessage('抱歉您没有注册资格');
+		}
+
+	}
+
+
+
+   /**
+	* 用户登录
+	*
+	* @return Response
+	*/
+	public function postLogin()
+	{	
+
+		//接受用户基本信息
+		$email=trim(Input::get('email'));
+		$password =trim(Input::get('password'));
+		$validator = Validator::make(Input::all(), Config::get('rules.member_login'));
+
+
+
+
+		//判断邮箱是否为空
+        if($validator->fails()) {
+
+		return Redirect::back()->withErrors($validator);
+        }  	
+
+
+
+		// //判断邮箱是否正确
+		// if(!preg_match("/\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*/", $email)){	
+
+		// 	return Redirect::back()->withMessage('请输入正确邮箱');
+		// }
+
+	
+		// //判断密码是否为空
+		// if(empty($password)){
+
+		// 	return Redirect::back()->withMessage('密码不能为空');
+		// }
+
+		//判断邮箱是否存在
+		$remail=DB::table('members')->where('email','=',$email)->count();
+		if(empty($remail)) {
+
+			return Redirect::back()->withMessage('邮箱或密码不正确');
+		}  
+
+		//md5 加密 用户密码
+		$password_md5=md5($password);
+
+		//查询members表里的md5 32位加密code
+		$repassword = DB::table('members')->where('email',$email)->lists('password');
+
+		if($repassword[0] == self::VALUE_NULL ) {
+				return '数据库数据错误，密码为 null';  exit;
+		}
+
+		//查询用户id
+		$uid = DB::table('members')->where('email',$email)->lists('id');
+
+		//判断密码是否正确
+		if($password_md5  !== $repassword[0]) {
+			return Redirect::back()->withMessage('密码错误');
+		}
+
+		//查询用户权限
+		$state = DB::table('members')->where('id',$uid)->lists('state');
+
+		//如果为禁用则禁止登录,其他权限用户则执行登录，记录Session
+		if($state[0] == self::STATE_TYPE_FREEZE) {
+
+			return Redirect::back()->withMessage('抱歉您的帐户被冻结');
+		
+		//如果为管理员则自动跳转到后台管理页面
+		} elseif ($state[0]== self::STATE_TYPE_ADMIN) {
+
+			Session::put('email',$email);
+			Session::put('uid',$uid[0]);
+			return View::make('Backend.pages.backend');
+		} else {
+
+			Session::put('email',$email);
+			Session::put('uid',$uid[0]);
+			return Redirect::to('member/home?uid='.$uid[0].'&email='.$email);
+		}
+	}
+
+
+
+   /**
+	* 删除用户
+	*
+	* @return Response
+	*/
+	public function getDeleteuser($id,$email)
+	{
+
+		//统计数据库Email 的个数
+		$count_email= DB::table('members')->where('email','=',$email)->count();
+		
+ 
+		//如果大于则代表有重复数据
+		if ($count_email > 1 ) {
+
+			// 如果 有重复的email 则依次删除所有重复的内容
+			$delete_value= DB::table('members')->where('email','=',$email)->delete();
+		} else {
+
+			//清除申请注册表的信息
+			$delete_value= DB::table('email_code')->where('EM', '=', $email)->delete();
+			//或只删除独立的一条
+			$delete_value= DB::table('members')->where('email','=',$email)->delete();
+		}
+
+		//判断是否删除成功
+		if ($delete_value) {
+
+			return Redirect::back()->withMessage('删除成功');
+
+		} else {
+
+			return Redirect::back()->withMessage('删除失败');
+		}
+
+	}
+
+
+   /**
+	* 拒绝申请
+	*
+	* @return Response
+	*/
+	public function getDeletinvit($id,$email){
+
+
+		//如果错误传值 则return 
+		if(empty($id)){
+
+			return Redirect::back()->withMessage('错误');
+		}
+
+		//清除申请注册表的信息
+		$delete_value= DB::table('email_code')->where('EM', '=', $email)->delete();
+
+
+		//判断是否删除成功
+		if ($delete_value) {
+
+			return Redirect::back()->withMessage('已拒绝');
+		} else {
+
+			return Redirect::back()->withMessage('拒绝失败，Error');
+		}
+
+
+	}
+
+   /**
+	* 用户信息修改
+	*
+	* @return Response
+	*/
+	public function postUserupdate()
+	{
+
+		//获取用户信息
+		$uid =Input::get('uid');
+		$newemail= Input::get('email');
+
+		//判断Email 信息是否为空
+		if(empty($newemail)){
+
+			return Redirect::back()->withMessage('请填写新邮箱');
+		}
+
+		//判断新邮箱是否正确
+		if(!preg_match("/\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*/", $newemail)){
+
+			return Redirect::back()->withMessage('请输入正确邮箱');
+		}
+
+		//修改用户信息
+		$certify = Member::find($uid);
+		$certify->email = $newemail;
+		$certify->save();
+		return Redirect::back()->withMessage('修改成功');
+
+	}
+
+
+
+   /**
+	* 用户信息修改 - 跳转
+	*
+	* @return Response
+	*/
+	public  function getHome()
+	{
+		
+		//用户更新email 的时候 改变session 存有的值
+		$uid= Input::get('uid');
+		$email =DB::table('members')->where('id',$uid)->lists('email');
+
+		//销毁已有Session Email 的值
+		Session::forget('email');
+
+		//记录新的Email值
+		Session::put('email',$email[0]);
+		return  View::make('Frontend/pages/home')->with('email',$email[0])->with('uid',$uid);
+
+	}
+
+
+
+   /**
+	* 用户登出
+	*
+	* @return Response
+	*/
+	public function getLogout()
+	{
+
+		//销毁Session
+		Session::flush();
+
+		//Redirect to pageshow 默认跳转到首页
+		return Redirect::to('member/pageshow');
+
+	}
+
+
+
+   /**
+	* 用户信息显示
+	*
+	* @return Response
+	*/
+	public function getUsercontrol()
+	{
+
+		//接受 页面传来的 state 值
+		$state = Input::get('state');	
+
+		//显示筛选   #冻结#  #管理员#  #普通用户#  #所有#
+		if($state == self::STATE_TYPE_PUBLIC){
+
+		//通过时间排序获取到普通用户所有的信息
+		$user_info = DB::table('members')->where('state',self::STATE_TYPE_PUBLIC)->orderBy('addtime', 'desc')->get();
+
+		//将信息传送到 模板 foreach 遍历信息
+		return View::make('Backend.pages.usercontrol')->with('user_info',$user_info)->with('state',self::STATE_TYPE_PUBLIC);
+
+
+		}elseif($state == self::STATE_TYPE_FREEZE){
+
+
+		//通过时间排序获取到冻结用户所有的信息
+		$user_info = DB::table('members')->where('state',self::STATE_TYPE_FREEZE)->orderBy('addtime', 'desc')->get();
+		return View::make('Backend.pages.usercontrol')->with('user_info',$user_info)->with('state',self::STATE_TYPE_FREEZE);
+
+		}elseif($state == self::STATE_TYPE_ADMIN){
+
+
+		//通过时间排序获取到管理员所有的信息
+		$user_info = DB::table('members')->where('state',self::STATE_TYPE_ADMIN)->orderBy('addtime', 'desc')->get();
+		return View::make('Backend.pages.usercontrol')->with('user_info',$user_info)->with('state',self::STATE_TYPE_ADMIN);
+
+
+		//默认通过Usercontrol 访问遍历获取所有信息
+		}else{
+
+		//通过时间排序获取到用户所有的信息
+		$user_info = DB::table('members')->orderBy('addtime', 'desc')->get();
+		return View::make('Backend.pages.usercontrol')->with('user_info',$user_info)->with('state',self::STATE_TYPE_ALL);
+
+		}
+
+
+	}
+
+
+
+   /**
+	* 用户状态
+	*
+	* @return Response
+	*/
+	public function getUserstate($id,$state)
+	{
+
+		//判断当前用户状态，如果为冻结，则解除
+		if ($state == self::STATE_TYPE_FREEZE) {
+
+			$stateType='1';
+			$certify = Member::find($id);
+			$certify->state = $stateType;
+			$certify->save();
+			return Redirect::back()->withMessage('解除禁用成功！');
+		} else {
+		
+			/**  
+			*用户表存储状态和身份是一个字段
+			*禁用  & 身份
+			*管理员可以冻结任何身份的用户
+			*/
+			//为其他则冻结
+			$stateType='2';
+			$certify = Member::find($id);
+			$certify->state = $stateType;
+			$certify->save();
+			return Redirect::back()->withMessage('禁用成功！');
+		}
+
+	}
+
+
+
+   /**
+	* 管理员设置
+	*
+	* @return Response
+	*/
+
+	public function getUsersetadmin($id,$state)
+	{
+
+		//判断当前用户状态 是否为管理员
+		if($state == self::STATE_TYPE_ADMIN){
+
+			$certify= Member::find($id);
+			$certify->state = self::STATE_TYPE_PUBLIC;
+			$certify->save();
+			return Redirect::back()->withMessage('解除成功！');
+		}else{
+			//如果不是管理员 则 设置为管理员
+			$certify=Member::find($id);
+			$certify->state= self::STATE_TYPE_ADMIN;
+			$certify->save();
+			return Redirect::back()->withMessage('设置管理员成功！');
+
+		}
+
+	}
+
+
+
+}
+/**
+|----------------------------------------------------------------------------------
+| Member 用户操作类  @Testing-Author:heli  结束时间: 2014-08-06
+|----------------------------------------------------------------------------------
+*/
